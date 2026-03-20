@@ -1,0 +1,14 @@
+{
+  "name": "harmonica-os",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=apps/web",
+    "lint": "npm run lint --workspace=apps/web",
+    "type-check": "tsc --noEmit --workspace packages/core && tsc --noEmit --workspace packages/ui"
+  }
+}
