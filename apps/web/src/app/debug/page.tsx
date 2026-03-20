@@ -1,51 +1,69 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card } from "@/components/shared/card";
 import { Button } from "@/components/shared/button";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { LevelMeter } from "@/components/audio/level-meter";
-import { useAudioEngine } from "@/hooks/use-audio-engine";
+import { PitchDisplay } from "@/components/harmonica/pitch-display";
+import { usePitchDetector } from "@/hooks/use-pitch-detector";
 import { useSettings } from "@/hooks/use-settings";
 import { getNotesForKey, AUDIO_CONFIG } from "@harmonica-os/core";
-import type { AudioBufferMessage } from "@/types/audio";
 
-const MAX_LOG_LINES = 40;
+const MAX_PITCH_LOG = 60;
 
 export default function DebugPage() {
   const { settings } = useSettings();
   const scale = getNotesForKey(settings.harmonicaKey);
   const [browserInfo, setBrowserInfo] = useState<Record<string, string>>({});
-  const [streamLog, setStreamLog] = useState<string[]>([]);
-  const logRef = useRef<HTMLPreElement>(null);
-
-  const handleBuffer = useCallback((msg: AudioBufferMessage) => {
-    const line = `[${msg.timestamp.toFixed(3)}s] rms=${msg.rms.toFixed(5)} peak=${msg.peak.toFixed(5)} sr=${msg.sampleRate} samples=${msg.samples.length}`;
-    setStreamLog((prev) => {
-      const next = [...prev, line];
-      if (next.length > MAX_LOG_LINES) next.shift();
-      return next;
-    });
-  }, []);
+  const [pitchLog, setPitchLog] = useState<string[]>([]);
+  const pitchLogRef = useRef<HTMLPreElement>(null);
 
   const {
-    state,
+    state: audioState,
+    pitchState,
     start,
     stop,
     isRunning,
-  } = useAudioEngine(handleBuffer);
+  } = usePitchDetector();
 
-  // Auto-scroll log
+  // Build pitch log from pitch state changes
+  const lastLoggedFrameRef = useRef(0);
   useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
+    if (pitchState.framesProcessed === lastLoggedFrameRef.current) return;
+    lastLoggedFrameRef.current = pitchState.framesProcessed;
+
+    const p = pitchState.currentPitch;
+    const r = pitchState.rawPitch;
+
+    let line: string;
+    if (!r) {
+      // Only log silence every 10th frame to avoid spamming
+      if (pitchState.framesProcessed % 10 !== 0) return;
+      line = `[frame ${pitchState.framesProcessed}] — silence / noise —`;
+    } else if (!p) {
+      line = `[frame ${pitchState.framesProcessed}] raw=${r.note}${r.octave} ${r.frequency.toFixed(1)}Hz conf=${(r.confidence * 100).toFixed(0)}% (below threshold)`;
+    } else {
+      line = `[frame ${pitchState.framesProcessed}] ${p.smoothedNote}${p.smoothedOctave} ${p.smoothedFrequency.toFixed(1)}Hz ${p.smoothedCents > 0 ? "+" : ""}${p.smoothedCents}¢ [${p.stability}] conf=${(p.raw.confidence * 100).toFixed(0)}% agree=${p.agreementCount}`;
     }
-  }, [streamLog]);
+
+    setPitchLog((prev) => {
+      const next = [...prev, line];
+      if (next.length > MAX_PITCH_LOG) next.shift();
+      return next;
+    });
+  }, [pitchState]);
+
+  // Auto-scroll pitch log
+  useEffect(() => {
+    if (pitchLogRef.current) {
+      pitchLogRef.current.scrollTop = pitchLogRef.current.scrollHeight;
+    }
+  }, [pitchLog]);
 
   useEffect(() => {
     const info: Record<string, string> = {};
-
     info["userAgent"] = navigator.userAgent;
     info["AudioWorklet"] = "AudioWorklet" in window ? "supported" : "not supported";
     info["mediaDevices"] = "mediaDevices" in navigator ? "supported" : "not supported";
@@ -55,7 +73,6 @@ export default function DebugPage() {
         : "not supported";
     info["Secure Context"] = window.isSecureContext ? "yes" : "no (mic will fail)";
 
-    // Check if permissions API is available
     if ("permissions" in navigator) {
       navigator.permissions
         .query({ name: "microphone" as PermissionName })
@@ -70,7 +87,6 @@ export default function DebugPage() {
     } else {
       info["Mic Permission"] = "API unavailable";
     }
-
     setBrowserInfo(info);
   }, []);
 
@@ -78,19 +94,19 @@ export default function DebugPage() {
     <div>
       <PageHeader
         title="Debug Panel"
-        description="System diagnostics and raw audio analysis state."
+        description="System diagnostics, pitch detection, and raw audio analysis."
       />
 
       <div className="flex flex-col gap-6">
-        {/* Audio engine control */}
+        {/* Audio + pitch engine control */}
         <Card className="flex flex-col gap-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Audio Engine</h2>
+            <h2 className="text-lg font-semibold">Audio + Pitch Engine</h2>
             <div className="flex items-center gap-2">
               <StatusBadge
-                variant={isRunning ? "success" : state.engineStatus === "error" ? "error" : "idle"}
-                label={state.engineStatus}
-                pulse={state.engineStatus === "starting"}
+                variant={isRunning ? "success" : audioState.engineStatus === "error" ? "error" : "idle"}
+                label={audioState.engineStatus}
+                pulse={audioState.engineStatus === "starting"}
               />
               <Button
                 size="sm"
@@ -105,82 +121,107 @@ export default function DebugPage() {
           {isRunning && (
             <>
               <LevelMeter
-                level={state.levels.rms}
-                peak={state.levels.peak}
+                level={audioState.levels.rms}
+                peak={audioState.levels.peak}
                 showDb
-                dbFS={state.levels.dbFS}
+                dbFS={audioState.levels.dbFS}
               />
               <div className="grid grid-cols-3 gap-3 text-sm sm:grid-cols-6">
                 <div>
                   <div className="text-xs text-[var(--text-secondary)]">Engine</div>
-                  <div className="font-mono">{state.engineStatus}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-[var(--text-secondary)]">Mic</div>
-                  <div className="font-mono">{state.micStatus}</div>
+                  <div className="font-mono">{audioState.engineStatus}</div>
                 </div>
                 <div>
                   <div className="text-xs text-[var(--text-secondary)]">Rate</div>
-                  <div className="font-mono">{state.sampleRate}</div>
+                  <div className="font-mono">{audioState.sampleRate}</div>
                 </div>
                 <div>
                   <div className="text-xs text-[var(--text-secondary)]">Buffers</div>
-                  <div className="font-mono">{state.buffersReceived}</div>
+                  <div className="font-mono">{audioState.buffersReceived}</div>
                 </div>
                 <div>
-                  <div className="text-xs text-[var(--text-secondary)]">RMS</div>
-                  <div className="font-mono">{state.levels.rms.toFixed(5)}</div>
+                  <div className="text-xs text-[var(--text-secondary)]">Pitch Frames</div>
+                  <div className="font-mono">{pitchState.framesProcessed}</div>
                 </div>
                 <div>
-                  <div className="text-xs text-[var(--text-secondary)]">Silent</div>
-                  <div className="font-mono">{state.levels.isSilent ? "yes" : "no"}</div>
+                  <div className="text-xs text-[var(--text-secondary)]">With Pitch</div>
+                  <div className="font-mono">{pitchState.framesWithPitch}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-[var(--text-secondary)]">Detection %</div>
+                  <div className="font-mono">
+                    {pitchState.framesProcessed > 0
+                      ? `${Math.round((pitchState.framesWithPitch / pitchState.framesProcessed) * 100)}%`
+                      : "—"}
+                  </div>
                 </div>
               </div>
             </>
           )}
 
-          {state.errorMessage && (
-            <p className="text-sm text-[var(--error)]">{state.errorMessage}</p>
+          {audioState.errorMessage && (
+            <p className="text-sm text-[var(--error)]">{audioState.errorMessage}</p>
           )}
         </Card>
 
-        {/* Raw audio stream log */}
+        {/* Live pitch display */}
+        {isRunning && (
+          <Card className="flex flex-col items-center gap-4">
+            <h2 className="text-sm font-medium text-[var(--text-secondary)]">
+              Live Pitch Detection
+            </h2>
+            <PitchDisplay pitch={pitchState.currentPitch} showRaw />
+          </Card>
+        )}
+
+        {/* Pitch stream log */}
         <Card>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Raw Audio Stream</h2>
-            {streamLog.length > 0 && (
-              <Button size="sm" variant="ghost" onClick={() => setStreamLog([])}>
+            <h2 className="text-lg font-semibold">Pitch Detection Stream</h2>
+            {pitchLog.length > 0 && (
+              <Button size="sm" variant="ghost" onClick={() => setPitchLog([])}>
                 Clear
               </Button>
             )}
           </div>
           <pre
-            ref={logRef}
-            className="h-48 overflow-y-auto overflow-x-hidden rounded-lg bg-[var(--bg-tertiary)] p-3 font-mono text-xs text-[var(--text-secondary)]"
+            ref={pitchLogRef}
+            className="h-56 overflow-y-auto overflow-x-hidden rounded-lg bg-[var(--bg-tertiary)] p-3 font-mono text-xs text-[var(--text-secondary)]"
           >
-            {streamLog.length === 0
-              ? "Start the audio engine to see raw buffer data..."
-              : streamLog.join("\n")}
+            {pitchLog.length === 0
+              ? "Start the engine to see pitch detection data..."
+              : pitchLog.join("\n")}
           </pre>
         </Card>
 
-        {/* Full engine state dump */}
-        <Card>
-          <h2 className="mb-3 text-lg font-semibold">Engine State (raw)</h2>
-          <pre className="overflow-x-auto rounded-lg bg-[var(--bg-tertiary)] p-4 font-mono text-xs text-[var(--text-secondary)]">
-            {JSON.stringify(
-              {
-                ...state,
-                levels: {
-                  ...state.levels,
-                  dbFS: state.levels.dbFS === -Infinity ? "-Infinity" : state.levels.dbFS,
+        {/* Pitch detector state dump */}
+        {isRunning && (
+          <Card>
+            <h2 className="mb-3 text-lg font-semibold">Pitch Detector State</h2>
+            <pre className="overflow-x-auto rounded-lg bg-[var(--bg-tertiary)] p-4 font-mono text-xs text-[var(--text-secondary)]">
+              {JSON.stringify(
+                {
+                  ...pitchState,
+                  currentPitch: pitchState.currentPitch
+                    ? {
+                        smoothedNote: pitchState.currentPitch.smoothedNote,
+                        smoothedOctave: pitchState.currentPitch.smoothedOctave,
+                        smoothedFrequency: pitchState.currentPitch.smoothedFrequency.toFixed(2),
+                        smoothedCents: pitchState.currentPitch.smoothedCents,
+                        stability: pitchState.currentPitch.stability,
+                        agreementCount: pitchState.currentPitch.agreementCount,
+                        rawNote: pitchState.currentPitch.raw.note,
+                        rawFrequency: pitchState.currentPitch.raw.frequency.toFixed(2),
+                        rawConfidence: pitchState.currentPitch.raw.confidence.toFixed(3),
+                      }
+                    : null,
                 },
-              },
-              null,
-              2,
-            )}
-          </pre>
-        </Card>
+                null,
+                2,
+              )}
+            </pre>
+          </Card>
+        )}
 
         {/* Browser capabilities */}
         <Card>
@@ -213,14 +254,6 @@ export default function DebugPage() {
           <h2 className="mb-3 text-lg font-semibold">Audio Configuration</h2>
           <pre className="overflow-x-auto rounded-lg bg-[var(--bg-tertiary)] p-4 font-mono text-sm text-[var(--text-secondary)]">
             {JSON.stringify(AUDIO_CONFIG, null, 2)}
-          </pre>
-        </Card>
-
-        {/* Current settings */}
-        <Card>
-          <h2 className="mb-3 text-lg font-semibold">Current Settings</h2>
-          <pre className="overflow-x-auto rounded-lg bg-[var(--bg-tertiary)] p-4 font-mono text-sm text-[var(--text-secondary)]">
-            {JSON.stringify(settings, null, 2)}
           </pre>
         </Card>
 
