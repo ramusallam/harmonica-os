@@ -15,7 +15,8 @@ import { CalibrationMatcher, type DegreeMatch } from "@/lib/calibration/matcher"
 import { CommandStateMachine, type CommandMachineState, type ControlMode } from "@/lib/commands/state-machine";
 import { loadCalibration } from "@/lib/storage/local-storage";
 import { buildDefaultProfile } from "@/lib/calibration/calibration";
-import { DEFAULT_COMMAND_MAP, WebDispatcher, type CommandDispatcher } from "@harmonica-os/core";
+import { DEFAULT_COMMAND_MAP, WebDispatcher, TauriDispatcher, type CommandDispatcher } from "@harmonica-os/core";
+import { isTauri, getTauriInvoke } from "@/lib/runtime";
 import type { CommandEvent } from "@/types/commands";
 
 // --- Dispatchers ---
@@ -40,7 +41,7 @@ function getDispatcher(mode: ControlMode): CommandDispatcher {
     case "browser-demo":
       return new LoggingWebDispatcher();
     case "desktop":
-      return new NoOpDispatcher(); // Placeholder — Tauri will inject real dispatcher
+      return new NoOpDispatcher(); // Replaced async in useEffect below
   }
 }
 
@@ -87,9 +88,25 @@ export default function ControlPage() {
     matcherRef.current = new CalibrationMatcher(profile);
   }, [settings.harmonicaKey]);
 
-  // Initialize state machine
+  const [tauriAvailable, setTauriAvailable] = useState(false);
+
+  // Detect Tauri runtime
   useEffect(() => {
-    dispatcherRef.current = getDispatcher(controlMode);
+    setTauriAvailable(isTauri());
+  }, []);
+
+  // Initialize state machine + dispatcher
+  useEffect(() => {
+    // Set dispatcher — async for Tauri, sync for others
+    if (controlMode === "desktop" && tauriAvailable) {
+      getTauriInvoke().then((invoke) => {
+        if (invoke) {
+          dispatcherRef.current = new TauriDispatcher(invoke);
+        }
+      });
+    } else {
+      dispatcherRef.current = getDispatcher(controlMode);
+    }
 
     smRef.current = new CommandStateMachine({
       commandMap: settings.commandMap ?? DEFAULT_COMMAND_MAP,
@@ -111,7 +128,7 @@ export default function ControlPage() {
         }
       },
     });
-  }, [controlMode, settings.commandMap]);
+  }, [controlMode, settings.commandMap, tauriAvailable]);
 
   // Feed pitch data into state machine every frame
   useEffect(() => {
@@ -224,7 +241,9 @@ export default function ControlPage() {
             >
               <option value="learn-only">Learn Only (no commands)</option>
               <option value="browser-demo">Browser Demo (in-page keys)</option>
-              <option value="desktop">Desktop Control (coming soon)</option>
+              <option value="desktop">
+                {tauriAvailable ? "Desktop Control (native keys)" : "Desktop Control (requires desktop app)"}
+              </option>
             </select>
           </div>
         </Card>
@@ -369,9 +388,10 @@ export default function ControlPage() {
           </p>
         )}
         {controlMode === "desktop" && (
-          <p className="text-center text-sm text-[var(--warning)]">
-            Desktop control requires the Tauri desktop app (coming soon).
-            Commands are detected but not dispatched in this mode.
+          <p className={`text-center text-sm ${tauriAvailable ? "text-[var(--success)]" : "text-[var(--warning)]"}`}>
+            {tauriAvailable
+              ? "Desktop mode active. Commands inject OS-level keystrokes via Tauri."
+              : "Desktop control requires the Tauri desktop app. Run `npm run tauri dev` to use this mode."}
           </p>
         )}
         {controlMode === "learn-only" && (

@@ -17,7 +17,7 @@ export {
 } from "./commands/command-mapper";
 export type { CommandMap, KeyAction } from "./commands/command-mapper";
 
-export { WebDispatcher } from "./commands/dispatcher";
+export { WebDispatcher, TauriDispatcher } from "./commands/dispatcher";
 export type { CommandDispatcher } from "./commands/dispatcher";
 
 // Config

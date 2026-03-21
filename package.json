@@ -9,6 +9,9 @@
     "dev": "npm run dev --workspace=apps/web",
     "build": "npm run build --workspace=apps/web",
     "lint": "npm run lint --workspace=apps/web",
-    "type-check": "tsc --noEmit --workspace packages/core && tsc --noEmit --workspace packages/ui"
+    "type-check": "tsc --noEmit --workspace packages/core && tsc --noEmit --workspace packages/ui",
+    "tauri": "cargo tauri",
+    "tauri:dev": "cargo tauri dev --config apps/desktop/src-tauri/tauri.conf.json",
+    "tauri:build": "cargo tauri build --config apps/desktop/src-tauri/tauri.conf.json"
   }
 }
