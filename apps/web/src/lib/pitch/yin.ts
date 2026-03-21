@@ -50,9 +50,10 @@ export function yin(
   if (tauEstimate === -1) return null;
 
   // Step 4: Parabolic interpolation for sub-sample accuracy
-  const s0 = cumulativeMeanNormalized[tauEstimate - 1] ?? cumulativeMeanNormalized[tauEstimate];
+  // Guard bounds: tauEstimate is always >= 2 (loop starts at tau=2) but check +1
+  const s0 = tauEstimate > 0 ? cumulativeMeanNormalized[tauEstimate - 1] : cumulativeMeanNormalized[tauEstimate];
   const s1 = cumulativeMeanNormalized[tauEstimate];
-  const s2 = cumulativeMeanNormalized[tauEstimate + 1] ?? cumulativeMeanNormalized[tauEstimate];
+  const s2 = tauEstimate + 1 < halfLen ? cumulativeMeanNormalized[tauEstimate + 1] : cumulativeMeanNormalized[tauEstimate];
 
   let betterTau = tauEstimate;
   const denom = 2 * s1 - s2 - s0;

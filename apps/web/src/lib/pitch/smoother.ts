@@ -90,6 +90,8 @@ export class PitchSmoother {
   }
 
   private computeMedian(): number {
+    if (this.recentFrequencies.length === 0) return 0;
+    if (this.recentFrequencies.length === 1) return this.recentFrequencies[0];
     const sorted = [...this.recentFrequencies].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
     if (sorted.length % 2 === 0) {

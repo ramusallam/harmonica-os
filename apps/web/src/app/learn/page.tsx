@@ -49,6 +49,15 @@ export default function LearnPage() {
     engineRef.current.setMode(mode);
   }, [mode]);
 
+  const scheduleNextPrompt = useCallback((delayMs: number) => {
+    if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
+    autoAdvanceRef.current = setTimeout(() => {
+      const next = engineRef.current.nextPrompt();
+      setPrompt(next);
+      setFeedback("");
+    }, delayMs);
+  }, []);
+
   // Feed pitch data into lesson engine every frame
   useEffect(() => {
     if (!isSessionActive || !isRunning) return;
@@ -75,16 +84,7 @@ export default function LearnPage() {
       setFeedback(wrongFeedback(updated, settings.harmonicaKey));
       scheduleNextPrompt(engineRef.current.wrongDisplayMs);
     }
-  }, [isSessionActive, isRunning, pitchState.currentPitch, prompt]);
-
-  const scheduleNextPrompt = useCallback((delayMs: number) => {
-    if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
-    autoAdvanceRef.current = setTimeout(() => {
-      const next = engineRef.current.nextPrompt();
-      setPrompt(next);
-      setFeedback("");
-    }, delayMs);
-  }, []);
+  }, [isSessionActive, isRunning, pitchState.currentPitch, prompt, scheduleNextPrompt, settings.harmonicaKey]);
 
   function startSession() {
     engineRef.current.reset();

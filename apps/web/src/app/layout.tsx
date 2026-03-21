@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Nav } from "@/components/layout/nav";
+import { ErrorBoundary } from "@/components/shared/error-boundary";
 import "./globals.css";
 
 export const viewport: Viewport = {
@@ -29,7 +30,9 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body className="min-h-screen antialiased">
         <Nav />
-        <main className="mx-auto max-w-5xl px-4 py-8">{children}</main>
+        <main className="mx-auto max-w-5xl px-4 py-8">
+          <ErrorBoundary>{children}</ErrorBoundary>
+        </main>
         {/* Screen reader announcer — hidden, used by a11y helpers */}
         <div
           id="sr-announcer"

@@ -123,8 +123,8 @@ export default function CalibratePage() {
 
   function handleSave() {
     const collectors = [1, 4, 5]
-      .map((d) => collectorsRef.current.get(d)!)
-      .filter(Boolean);
+      .map((d) => collectorsRef.current.get(d))
+      .filter((c): c is SampleCollector => c !== undefined);
 
     const profile = buildCalibrationProfile(
       settings.harmonicaKey,
