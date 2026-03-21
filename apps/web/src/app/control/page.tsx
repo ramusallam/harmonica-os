@@ -22,9 +22,7 @@ import type { CommandEvent } from "@/types/commands";
 // --- Dispatchers ---
 
 class NoOpDispatcher implements CommandDispatcher {
-  fire(): void {
-    // Learn-only mode — no action
-  }
+  fire(): void {}
 }
 
 class LoggingWebDispatcher implements CommandDispatcher {
@@ -41,11 +39,11 @@ function getDispatcher(mode: ControlMode): CommandDispatcher {
     case "browser-demo":
       return new LoggingWebDispatcher();
     case "desktop":
-      return new NoOpDispatcher(); // Replaced async in useEffect below
+      return new NoOpDispatcher();
   }
 }
 
-// --- Phase display config ---
+// --- Phase display ---
 
 const PHASE_CONFIG: Record<string, { label: string; variant: "success" | "warning" | "error" | "info" | "idle" }> = {
   idle: { label: "Idle", variant: "idle" },
@@ -60,6 +58,18 @@ const ACTION_LABELS: Record<string, string> = {
   ArrowLeft: "← Left Arrow",
   Space: "␣ Spacebar",
 };
+
+// --- Debug log entry ---
+
+type DebugEntry = {
+  time: string;
+  message: string;
+  level: "info" | "warn" | "error" | "fire";
+};
+
+function timestamp(): string {
+  return new Date().toLocaleTimeString("en-US", { hour12: false, fractionalSecondDigits: 1 });
+}
 
 export default function ControlPage() {
   const { settings } = useSettings();
@@ -78,9 +88,30 @@ export default function ControlPage() {
   const [lastFired, setLastFired] = useState<CommandEvent | null>(null);
   const [demoOutput, setDemoOutput] = useState<string[]>([]);
 
+  // Desktop safety state
+  const [tauriAvailable, setTauriAvailable] = useState(false);
+  const [isArmed, setIsArmed] = useState(false);
+  const [nativeFireCount, setNativeFireCount] = useState(0);
+  const [debugLog, setDebugLog] = useState<DebugEntry[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
+
   const matcherRef = useRef<CalibrationMatcher | null>(null);
   const smRef = useRef<CommandStateMachine | null>(null);
   const dispatcherRef = useRef<CommandDispatcher>(getDispatcher(controlMode));
+  const tauriDispatcherRef = useRef<TauriDispatcher | null>(null);
+
+  const addDebug = useCallback((message: string, level: DebugEntry["level"] = "info") => {
+    setDebugLog((prev) => [{ time: timestamp(), message, level }, ...prev.slice(0, 99)]);
+  }, []);
+
+  // Detect Tauri runtime
+  useEffect(() => {
+    const available = isTauri();
+    setTauriAvailable(available);
+    if (available) {
+      addDebug("Tauri runtime detected");
+    }
+  }, [addDebug]);
 
   // Initialize matcher with calibration profile
   useEffect(() => {
@@ -88,24 +119,31 @@ export default function ControlPage() {
     matcherRef.current = new CalibrationMatcher(profile);
   }, [settings.harmonicaKey]);
 
-  const [tauriAvailable, setTauriAvailable] = useState(false);
-
-  // Detect Tauri runtime
-  useEffect(() => {
-    setTauriAvailable(isTauri());
-  }, []);
-
   // Initialize state machine + dispatcher
   useEffect(() => {
-    // Set dispatcher — async for Tauri, sync for others
     if (controlMode === "desktop" && tauriAvailable) {
       getTauriInvoke().then((invoke) => {
         if (invoke) {
-          dispatcherRef.current = new TauriDispatcher(invoke);
+          const td = new TauriDispatcher(invoke, {
+            onFire: (action) => {
+              setNativeFireCount((c) => c + 1);
+              addDebug(`Native key fired: ${ACTION_LABELS[action] ?? action}`, "fire");
+            },
+            onError: (action, err) => {
+              addDebug(`Error firing ${action}: ${err}`, "error");
+            },
+            onRateLimited: (action) => {
+              addDebug(`Rate limited: ${action}`, "warn");
+            },
+          });
+          tauriDispatcherRef.current = td;
+          dispatcherRef.current = td;
+          addDebug("TauriDispatcher initialized");
         }
       });
     } else {
       dispatcherRef.current = getDispatcher(controlMode);
+      tauriDispatcherRef.current = null;
     }
 
     smRef.current = new CommandStateMachine({
@@ -114,9 +152,7 @@ export default function ControlPage() {
       cooldownMs: 300,
       displayMs: 400,
       onCommand: (event) => {
-        // Dispatch to the appropriate target
         dispatcherRef.current.fire(event.action);
-
         setLastFired(event);
         setCommandHistory((prev) => [...prev, event]);
 
@@ -128,7 +164,7 @@ export default function ControlPage() {
         }
       },
     });
-  }, [controlMode, settings.commandMap, tauriAvailable]);
+  }, [controlMode, settings.commandMap, tauriAvailable, addDebug]);
 
   // Feed pitch data into state machine every frame
   useEffect(() => {
@@ -146,17 +182,16 @@ export default function ControlPage() {
     setMachineState(sm.getState());
   }, [isActive, isRunning, pitchState.currentPitch]);
 
-  // Listen for browser-demo keyboard events
+  // Browser-demo keyboard listener
   useEffect(() => {
     if (controlMode !== "browser-demo") return;
 
     function handleKey(e: KeyboardEvent) {
-      // Only capture our synthetic events
       if (!e.isTrusted) {
         setDemoOutput((prev) => {
           const label = e.code === "Space" ? "␣ Space" : e.code === "ArrowRight" ? "→ Right" : e.code === "ArrowLeft" ? "← Left" : e.code;
           const msg = `Key: ${label}`;
-          if (prev[0] === msg) return prev; // Avoid duplicates from keydown+keyup
+          if (prev[0] === msg) return prev;
           return [msg, ...prev.slice(0, 9)];
         });
       }
@@ -165,6 +200,21 @@ export default function ControlPage() {
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
   }, [controlMode]);
+
+  // Kill switch: Escape key disarms + stops everything
+  useEffect(() => {
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === "Escape" && (isActive || isArmed)) {
+        e.preventDefault();
+        emergencyStop();
+      }
+    }
+
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [isActive, isArmed]);
+
+  // --- Actions ---
 
   function startControl() {
     smRef.current?.reset();
@@ -178,15 +228,56 @@ export default function ControlPage() {
     }
 
     setIsActive(true);
+    addDebug(`Started in ${controlMode} mode`);
   }
 
   function stopControl() {
     setIsActive(false);
     stop();
+    addDebug("Stopped");
+  }
+
+  async function armDesktop() {
+    const td = tauriDispatcherRef.current;
+    if (!td) return;
+
+    try {
+      await td.arm();
+      setIsArmed(true);
+      setNativeFireCount(0);
+      addDebug("ARMED — native key injection is live", "warn");
+    } catch (err) {
+      addDebug(`Failed to arm: ${err}`, "error");
+    }
+  }
+
+  async function disarmDesktop() {
+    const td = tauriDispatcherRef.current;
+    if (!td) return;
+
+    try {
+      await td.disarm();
+      setIsArmed(false);
+      addDebug("Disarmed — native key injection stopped");
+    } catch (err) {
+      addDebug(`Failed to disarm: ${err}`, "error");
+    }
+  }
+
+  function emergencyStop() {
+    setIsActive(false);
+    stop();
+    if (tauriDispatcherRef.current) {
+      tauriDispatcherRef.current.disarm().catch(() => {});
+      setIsArmed(false);
+    }
+    addDebug("EMERGENCY STOP — all systems halted", "error");
   }
 
   const phase = machineState?.phase ?? "idle";
   const phaseInfo = PHASE_CONFIG[phase] ?? PHASE_CONFIG.idle;
+  const isDesktopMode = controlMode === "desktop";
+  const isDesktopLive = isDesktopMode && tauriAvailable && isArmed && isActive;
 
   return (
     <div>
@@ -196,14 +287,30 @@ export default function ControlPage() {
       />
 
       <div className="flex flex-col gap-6">
+        {/* Emergency stop banner — always visible when armed */}
+        {isArmed && (
+          <div className="flex items-center justify-between rounded-lg bg-[var(--error)]/10 p-4 ring-2 ring-[var(--error)]/40">
+            <div>
+              <div className="font-bold text-[var(--error)]">Native Key Injection Armed</div>
+              <div className="text-sm text-[var(--text-secondary)]">
+                Press Escape or click Emergency Stop to disarm instantly.
+                {nativeFireCount > 0 && ` Keys fired: ${nativeFireCount}`}
+              </div>
+            </div>
+            <Button variant="danger" onClick={emergencyStop}>
+              Emergency Stop
+            </Button>
+          </div>
+        )}
+
         {/* Status + controls bar */}
         <Card className="flex flex-col gap-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <StatusBadge
-                variant={isActive ? phaseInfo.variant : "idle"}
-                label={isActive ? phaseInfo.label : "Off"}
-                pulse={isActive && phase === "candidate"}
+                variant={isDesktopLive ? "error" : isActive ? phaseInfo.variant : "idle"}
+                label={isDesktopLive ? "LIVE" : isActive ? phaseInfo.label : "Off"}
+                pulse={isDesktopLive || (isActive && phase === "candidate")}
               />
               <span className="text-sm text-[var(--text-secondary)]">
                 Key of {settings.harmonicaKey}
@@ -214,12 +321,14 @@ export default function ControlPage() {
                 </Link>
               )}
             </div>
-            <Button
-              variant={isActive ? "danger" : "primary"}
-              onClick={isActive ? stopControl : startControl}
-            >
-              {isActive ? "Stop" : "Start Controlling"}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant={isActive ? "danger" : "primary"}
+                onClick={isActive ? stopControl : startControl}
+              >
+                {isActive ? "Stop" : "Start Controlling"}
+              </Button>
+            </div>
           </div>
 
           {/* Mode selector */}
@@ -232,6 +341,9 @@ export default function ControlPage() {
               value={controlMode}
               onChange={(e) => {
                 const next = e.target.value as ControlMode;
+                if (isArmed) {
+                  disarmDesktop();
+                }
                 setControlMode(next);
                 if (isActive) {
                   stopControl();
@@ -246,6 +358,29 @@ export default function ControlPage() {
               </option>
             </select>
           </div>
+
+          {/* Desktop arm/disarm toggle */}
+          {isDesktopMode && tauriAvailable && (
+            <div className="flex items-center justify-between rounded-lg bg-[var(--bg-tertiary)] p-3">
+              <div>
+                <div className="text-sm font-medium">
+                  {isArmed ? "Native key injection is armed" : "Native key injection is disarmed"}
+                </div>
+                <div className="text-xs text-[var(--text-secondary)]">
+                  {isArmed
+                    ? "Confirmed notes will inject OS-level keystrokes. Press Escape to stop."
+                    : "Arm to enable OS-level keystrokes. Detection will run but no keys will fire until armed."}
+                </div>
+              </div>
+              <Button
+                variant={isArmed ? "danger" : "secondary"}
+                size="sm"
+                onClick={isArmed ? disarmDesktop : armDesktop}
+              >
+                {isArmed ? "Disarm" : "Arm"}
+              </Button>
+            </div>
+          )}
         </Card>
 
         <div className="grid gap-6 md:grid-cols-2">
@@ -317,6 +452,7 @@ export default function ControlPage() {
                 </div>
                 <div className="mt-1 text-sm text-[var(--text-secondary)]">
                   Degree {lastFired.degree} · {Math.round(lastFired.confidence * 100)}% confidence
+                  {isDesktopLive && " · native"}
                 </div>
               </div>
             )}
@@ -381,6 +517,40 @@ export default function ControlPage() {
           <CommandLog events={commandHistory} />
         </Card>
 
+        {/* Debug log — collapsible */}
+        <Card>
+          <button
+            onClick={() => setShowDebug(!showDebug)}
+            className="flex w-full items-center justify-between text-left"
+          >
+            <h2 className="text-sm font-medium text-[var(--text-secondary)]">
+              Debug Log ({debugLog.length} entries)
+            </h2>
+            <span className="text-xs text-[var(--text-secondary)]">{showDebug ? "Hide" : "Show"}</span>
+          </button>
+          {showDebug && (
+            <div className="mt-3 flex max-h-64 flex-col gap-0.5 overflow-y-auto font-mono text-xs">
+              {debugLog.length === 0 ? (
+                <div className="text-[var(--text-secondary)]">No events yet</div>
+              ) : (
+                debugLog.map((entry, i) => (
+                  <div
+                    key={`${entry.time}-${i}`}
+                    className={`rounded px-2 py-0.5 ${
+                      entry.level === "error" ? "text-[var(--error)]" :
+                      entry.level === "warn" ? "text-[var(--warning)]" :
+                      entry.level === "fire" ? "text-[var(--success)]" :
+                      "text-[var(--text-secondary)]"
+                    }`}
+                  >
+                    <span className="opacity-50">{entry.time}</span> {entry.message}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </Card>
+
         {/* Mode notices */}
         {controlMode === "browser-demo" && (
           <p className="text-center text-sm text-[var(--text-secondary)]">
@@ -388,16 +558,15 @@ export default function ControlPage() {
           </p>
         )}
         {controlMode === "desktop" && (
-          <p className={`text-center text-sm ${tauriAvailable ? "text-[var(--success)]" : "text-[var(--warning)]"}`}>
+          <p className={`text-center text-sm ${tauriAvailable ? "text-[var(--text-secondary)]" : "text-[var(--warning)]"}`}>
             {tauriAvailable
-              ? "Desktop mode active. Commands inject OS-level keystrokes via Tauri."
-              : "Desktop control requires the Tauri desktop app. Run `npm run tauri dev` to use this mode."}
+              ? "Desktop mode. Arm the system to enable native key injection. Escape key is the kill switch."
+              : "Desktop control requires the Tauri desktop app. Run `npm run tauri:dev` to use this mode."}
           </p>
         )}
         {controlMode === "learn-only" && (
           <p className="text-center text-sm text-[var(--text-secondary)]">
             Learn Only: detection runs but no commands are dispatched.
-            Use this to practice without triggering actions.
           </p>
         )}
       </div>
