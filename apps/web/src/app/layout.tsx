@@ -33,6 +33,7 @@ export default function RootLayout({
         <main className="mx-auto max-w-5xl px-4 py-8">
           <ErrorBoundary>{children}</ErrorBoundary>
         </main>
+        <p className="made-by">HarmonicaOS by <a href="https://cyclesoflearning.com" target="_blank" rel="noopener">Ramsey Musallam</a></p>
         {/* Screen reader announcer — hidden, used by a11y helpers */}
         <div
           id="sr-announcer"
